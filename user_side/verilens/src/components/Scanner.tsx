@@ -20,7 +20,11 @@ export function Scanner() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanTimestamp, setScanTimestamp] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  const [detectionMethod, setDetectionMethod] = useState<string | null>(null);
+  const [metadataMarkers, setMetadataMarkers] = useState<string[]>([]);
+  const [synthIDResult, setSynthIDResult] = useState<{ detected: boolean; confidence: number; signals: string[] } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const scanAbortControllerRef = useRef<AbortController | null>(null);
   const { isConnected } = useAccount();
 
   const scanId = useMemo(
@@ -40,18 +44,68 @@ export function Scanner() {
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
+  // Cleanup abort controller on unmount
+  useEffect(() => {
+    return () => {
+      if (scanAbortControllerRef.current) {
+        scanAbortControllerRef.current.abort();
+      }
+    };
+  }, []);
+
+  const validateFile = (selectedFile: File): boolean => {
+    const MAX_SIZE = 50 * 1024 * 1024; // 50MB
+    const ALLOWED_TYPES = [
+      "image/svg+xml",
+      "image/png",
+      "image/jpeg",
+      "image/webp",
+      "video/mp4",
+    ];
+
+    if (selectedFile.size > MAX_SIZE) {
+      setScanError("File too large. Maximum size is 50MB.");
+      return false;
+    }
+
+    if (!ALLOWED_TYPES.includes(selectedFile.type)) {
+      setScanError("Unsupported file type. Please upload SVG, PNG, JPG, WEBP, or MP4.");
+      return false;
+    }
+
+    return true;
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
-      setResult(null);
+      const selectedFile = e.target.files[0];
+      if (validateFile(selectedFile)) {
+        setFile(selectedFile);
+        setResult(null);
+        setScanError(null);
+      } else {
+        // Clear input so user can retry same file if needed (after fixing error?)
+        if (fileInputRef.current) fileInputRef.current.value = "";
+      }
     }
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      setFile(e.dataTransfer.files[0]);
-      setResult(null);
+      const selectedFile = e.dataTransfer.files[0];
+      if (validateFile(selectedFile)) {
+        setFile(selectedFile);
+        setResult(null);
+        setScanError(null);
+      }
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      fileInputRef.current?.click();
     }
   };
 
@@ -62,6 +116,15 @@ export function Scanner() {
     setScanError(null);
     setScanTimestamp(null);
 
+    // Create AbortController
+    const controller = new AbortController();
+    scanAbortControllerRef.current = controller;
+    
+    // Set timeout – first request may need to download the ONNX model (~120 s)
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 120_000);
+
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -69,90 +132,50 @@ export function Scanner() {
       const res = await fetch("/api/scan", {
         method: "POST",
         body: formData,
+        signal: controller.signal,
       });
 
       const contentType = res.headers.get("content-type") ?? "";
       if (!contentType.includes("application/json")) {
-        setScanError(
-          `Unexpected response (HTTP ${res.status}). Please try again.`
-        );
-        return;
+        throw new Error(`Unexpected response (HTTP ${res.status}).`);
       }
 
-      let data: unknown;
-      try {
-        data = await res.json();
-      } catch {
-        setScanError("Failed to parse server response. Please try again.");
-        return;
-      }
+      const data = await res.json();
 
       if (!res.ok) {
-        const errMsg =
-          typeof data === "object" &&
-          data !== null &&
-          "error" in data &&
-          typeof (data as Record<string, unknown>).error === "string"
-            ? (data as Record<string, string>).error
-            : "Scan failed. Please try again.";
-        setScanError(errMsg);
-        return;
+        throw new Error(data.error || "Scan failed.");
       }
 
-      // Validate payload shape
-      if (
-        typeof data !== "object" ||
-        data === null ||
-        !("verdict" in data) ||
-        !("confidence" in data) ||
-        !("scores" in data)
-      ) {
-        setScanError("Malformed response from server. Please try again.");
-        return;
+      // Basic validation
+      if (!data.verdict || typeof data.confidence !== "number") {
+        throw new Error("Invalid server response format.");
       }
 
-      const payload = data as {
-        verdict: unknown;
-        confidence: unknown;
-        scores: unknown;
-      };
+      const safeScores =
+        data.scores &&
+        typeof data.scores === "object" &&
+        typeof data.scores.human === "number" &&
+        typeof data.scores.artificial === "number"
+          ? data.scores
+          : { human: 0, artificial: 0 };
 
-      if (
-        (payload.verdict !== "verified" && payload.verdict !== "fake") ||
-        typeof payload.confidence !== "number" ||
-        typeof payload.scores !== "object" ||
-        payload.scores === null ||
-        typeof (payload.scores as Record<string, unknown>).artificial !==
-          "number" ||
-        typeof (payload.scores as Record<string, unknown>).human !== "number"
-      ) {
-        setScanError("Unexpected data format from server. Please try again.");
-        return;
-      }
-
-      const rawConfidence = payload.confidence as number;
-      const rawArtificial = (payload.scores as Record<string, number>).artificial;
-      const rawHuman = (payload.scores as Record<string, number>).human;
-
-      if (
-        !Number.isFinite(rawConfidence) ||
-        !Number.isFinite(rawArtificial) ||
-        !Number.isFinite(rawHuman) ||
-        rawConfidence < 0 || rawConfidence > 100 ||
-        rawArtificial < 0 || rawArtificial > 100 ||
-        rawHuman < 0 || rawHuman > 100
-      ) {
-        setScanError("Unexpected data format from server. Please try again.");
-        return;
-      }
-
-      setResult(payload.verdict as "verified" | "fake");
-      setConfidence(rawConfidence);
-      setScores({ artificial: rawArtificial, human: rawHuman });
+      setResult(data.verdict);
+      setConfidence(data.confidence);
+      setScores(safeScores);
       setScanTimestamp(new Date().toLocaleString());
-    } catch {
-      setScanError("Network error. Please try again.");
+      setDetectionMethod(data.detectionMethod ?? null);
+      setMetadataMarkers(Array.isArray(data.metadataMarkers) ? data.metadataMarkers : []);
+      setSynthIDResult(data.synthID ?? null);
+
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") {
+        setScanError("Scan timed out. Please try again.");
+      } else {
+        setScanError(err instanceof Error ? err.message : "Network error. Please try again.");
+      }
     } finally {
+      clearTimeout(timeoutId);
+      scanAbortControllerRef.current = null;
       setIsScanning(false);
     }
   };
@@ -164,8 +187,17 @@ export function Scanner() {
     setScores({ artificial: 0, human: 0 });
     setScanError(null);
     setScanTimestamp(null);
+    setDetectionMethod(null);
+    setMetadataMarkers([]);
+    setSynthIDResult(null);
     setIsScanning(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    
+    // Abort any ongoing scan
+    if (scanAbortControllerRef.current) {
+      scanAbortControllerRef.current.abort();
+      scanAbortControllerRef.current = null;
+    }
   };
 
   return (
@@ -190,10 +222,14 @@ export function Scanner() {
             <CardContent>
               {!file ? (
                 <div 
-                  className="border-2 border-dashed border-slate-700 rounded-lg p-10 text-center hover:border-primary/50 transition-colors cursor-pointer bg-slate-900/20"
+                  role="button"
+                  tabIndex={0}
+                  aria-label="Upload file, click or press Enter/Space"
+                  className="border-2 border-dashed border-slate-700 rounded-lg p-10 text-center hover:border-primary/50 transition-colors cursor-pointer bg-slate-900/20 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-slate-950"
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={handleDrop}
                   onClick={() => fileInputRef.current?.click()}
+                  onKeyDown={handleKeyDown}
                 >
                   <input 
                     type="file" 
@@ -368,6 +404,50 @@ export function Scanner() {
                 </div>
 
                 <div className="space-y-3 pt-2 border-t border-slate-800/50">
+                  {/* Detection Method */}
+                  {detectionMethod && (
+                    <div className="flex items-center gap-2 pb-2">
+                      <span className="text-xs text-slate-500 uppercase tracking-wider">Method:</span>
+                      <Badge variant="outline" className="text-xs font-mono border-slate-700 text-slate-300">
+                        {detectionMethod === "synthid"
+                          ? "SynthID Watermark"
+                          : detectionMethod === "synthid+ai"
+                            ? "SynthID + AI Forensics"
+                            : detectionMethod === "metadata"
+                              ? "SynthID / Metadata"
+                              : detectionMethod === "combined"
+                                ? "Metadata + AI Forensics"
+                                : "AI Forensics"}
+                      </Badge>
+                    </div>
+                  )}
+
+                  {/* SynthID Result */}
+                  {synthIDResult && synthIDResult.detected && (
+                    <div className="pt-2 pb-2 border-t border-slate-800/50 space-y-1.5">
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs text-slate-500 uppercase tracking-wider">SynthID Watermark</p>
+                        <Badge variant="destructive" className="text-[10px] px-1.5 py-0">
+                          DETECTED
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-500">Watermark confidence:</span>
+                        <span className="text-xs font-mono text-red-400">{synthIDResult.confidence}%</span>
+                      </div>
+                      {synthIDResult.signals.length > 0 && (
+                        <ul className="space-y-1">
+                          {synthIDResult.signals.map((s, i) => (
+                            <li key={i} className="text-xs text-red-400/80 font-mono flex items-start gap-1.5">
+                              <span className="mt-0.5 shrink-0">🛡️</span>
+                              <span>{s}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+
                   <div className="space-y-1.5">
                     <div className="flex justify-between items-center text-sm">
                       <span className="text-slate-500">Human Probability</span>
@@ -386,6 +466,21 @@ export function Scanner() {
                       <div className="bg-red-500 h-1.5 rounded-full transition-all" style={{ width: `${scores.artificial}%` }} />
                     </div>
                   </div>
+
+                  {/* Metadata Markers */}
+                  {metadataMarkers.length > 0 && (
+                    <div className="pt-2 border-t border-slate-800/50 space-y-1.5">
+                      <p className="text-xs text-slate-500 uppercase tracking-wider">SynthID / Metadata Signals</p>
+                      <ul className="space-y-1">
+                        {metadataMarkers.map((m, i) => (
+                          <li key={i} className="text-xs text-amber-400/80 font-mono flex items-start gap-1.5">
+                            <span className="mt-0.5 shrink-0">&#x26A0;</span>
+                            <span>{m}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>

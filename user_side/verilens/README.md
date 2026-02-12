@@ -1,36 +1,65 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# VeriLens
 
-## Getting Started
+VeriLens is a decentralized protocol and web application designed to combat deepfakes using AI forensics and blockchain anchoring. It allows users to scan media (images/videos) to detect AI-generated content and enables creators to certify their original work on-chain.
 
-First, run the development server:
+## Features
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- **Deepfake Detection Scanner:** Upload media to analyze authenticity using state-of-the-art AI models (via Hugging Face API).
+- **Blockchain Certification:** (Planned) Anchor original content to the blockchain to prove ownership and authenticity.
+- **Visual Evidence:** Provides detailed confidence scores and probability breakdowns for "Human" vs "Artificial" content.
+
+## Project Structure
+
+```
+user_side/verilens/
+├── src/
+│   ├── app/
+│   │   ├── page.tsx          # Main landing page
+│   │   └── api/scan/         # Next.js API route for handling scan requests
+│   ├── components/
+│   │   ├── Scanner.tsx       # Core scanning component with drag-and-drop
+│   │   └── Navbar.tsx        # Navigation bar
+│   └── lib/                  # Utility functions
+├── public/                   # Static assets
+└── package.json              # Project dependencies and scripts
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Setup & Installation
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1.  **Prerequisites:**
+    -   Node.js (v18+)
+    -   npm or yarn
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+2.  **Install Dependencies:**
+    ```bash
+    cd user_side/verilens
+    npm install
+    ```
 
-## Learn More
+3.  **Environment Variables:**
+    Create a `.env.local` file in the root of `user_side/verilens` and add your `HF_API_TOKEN`:
+    ```env
+    HF_API_TOKEN=your_hugging_face_token_here
+    ```
 
-To learn more about Next.js, take a look at the following resources:
+    **Obtaining a Hugging Face API Token:**
+    1. Create an account at [huggingface.co](https://huggingface.co).
+    2. Go to **Settings → Access Tokens** ([direct link](https://huggingface.co/settings/tokens)).
+    3. Create a new token with only the scopes you need (e.g., *read* access to Inference API).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+    **Security guidance:**
+    - **Never commit `.env.local` to version control.** Ensure `.env.local` is listed in your `.gitignore` (the default Next.js `.gitignore` already includes `.env*`).
+    - For production deployments, use a secrets manager (e.g., Vercel Environment Variables, AWS Secrets Manager, or Doppler) instead of a local file.
+    - Restrict your `HF_API_TOKEN` scopes to the minimum required permissions.
+    - Rotate your tokens regularly and revoke any that may have been exposed.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+4.  **Run Development Server:**
+    ```bash
+    npm run dev
+    ```
+    Open [http://localhost:3000](http://localhost:3000) to view the application.
 
-## Deploy on Vercel
+## Contribution
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+-   **Testing:** Run `npm run lint` to check for code quality issues.
+-   **Architecture:** The project uses Next.js App Router, Tailwind CSS for styling, and Shadcn UI for components.
